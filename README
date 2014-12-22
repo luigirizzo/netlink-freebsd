@@ -1,0 +1,155 @@
+Sources for building netlink sockets on FreeBSD,
+derived from routing sockets in FreeBSD and modified by
+Daniele Di Proietto and Luigi Rizzo, Universita` di Pisa - 2014
+
+This project implements netlink and generic netlink sockets,
+enough to build the in-kernel openvswitch datapath.
+
+Documentation on netlink sockets is at
+
+http://1984.lsi.us.es/~pablo/docs/spae.pdf
+http://tools.ietf.org/html/rfc3549
+
+Code is organised as follows:
+- main source files in sys/netlink/
+- the BSDmakefile to be copied to sys/modules/netlink/Makefile
+- headers part of the API in sys/netlink/net and sys/netlink/linux
+  to be copied into /usr/include/net and /usr/include/linux
+  (or /usr/include/netlink/net and /usr/include/netlink/linux/ )
+
+--- NETLINK sockets and functions ---
+
+netlink sockets natively operate on mbufs in FreeBSD,
+on sk_buff on linux. To build the native linux code in FreeBSD, use
+#define __COMPAT_MBUF_TYPE sk_buff
+in the forced include so the netlink prototypes use the correct type.
+
+netlink build routines expect a linear buffer, which is not what
+mbufs provide. To help that, we may allocate a linear buffer during
+the construction, which is then freed at the end before sending
+the mbuf to the kernel clients.
+
+------
+
+NOTE ON THE HEADERS
+In the new-world linux kernel:
+
+According to linux convention sources:
+include/uapi/linux/netlink.h
+    API shared by user and kernel, guarded by _UAPI__LINUX_NETLINK_H
+    and then installed to userspace as
+    include/linux/*netlink.h guarded by __LINUX_NETLINK_H
+
+include/linux/netlink.h
+    main kernel API, starts with #include <uapi/linux/netlink.h>
+    not used by userspace
+
+include/net/netlink.h
+    extended kernel API, starts with #include <linux/netlink.h>
+    (i.e. knows everything)
+
+(same goes for genetlink.h nfnetlink.h and other subfamilies).
+In FreeBSD we rename uapi/linux/netlink.h to linux/uapi_netlink.h
+so we do not need to modify it when installing.
+
+For installation of the header we need to change
+etc/mtree/BSD.include.dist
+
+Case 1: files in /usr/include/linux and /usr/include/net
+
+Index: /home/luigi/FreeBSD/head/etc/mtree/BSD.include.dist
+===================================================================
+--- /home/luigi/FreeBSD/head/etc/mtree/BSD.include.dist	(revision 273452)
++++ /home/luigi/FreeBSD/head/etc/mtree/BSD.include.dist	(working copy)
+@@ -249,6 +249,8 @@
+     ..
+     libmilter
+     ..
++    linux
++    ..
+     lzma
+     ..
+     machine
+Index: /home/luigi/FreeBSD/head/share/mk/src.opts.mk
+===================================================================
+--- /home/luigi/FreeBSD/head/share/mk/src.opts.mk	(revision 273452)
++++ /home/luigi/FreeBSD/head/share/mk/src.opts.mk	(working copy)
+@@ -116,6 +116,7 @@
+     NDIS \
+     NETCAT \
+     NETGRAPH \
++    NETLINK \
+     NLS_CATALOGS \
+     NS_CACHING \
+     NTP \
+Index: /home/luigi/FreeBSD/head/include/Makefile
+===================================================================
+--- /home/luigi/FreeBSD/head/include/Makefile	(revision 273452)
++++ /home/luigi/FreeBSD/head/include/Makefile	(working copy)
+@@ -186,6 +186,14 @@
+ 	${INSTALL} -C -o ${BINOWN} -g ${BINGRP} -m 444 *.h \
+ 	    ${DESTDIR}${INCLUDEDIR}/netinet
+ .endif
++.if ${MK_NETLINK} != "no"
++	cd ${.CURDIR}/../sys/netlink/linux; \
++	${INSTALL} -C -o ${BINOWN} -g ${BINGRP} -m 444 *.h \
++	    ${DESTDIR}${INCLUDEDIR}/linux
++	cd ${.CURDIR}/../sys/netlink/net; \
++	${INSTALL} -C -o ${BINOWN} -g ${BINGRP} -m 444 *.h \
++	    ${DESTDIR}${INCLUDEDIR}/net
++.endif
+ .if ${MK_PF} != "no"
+ 	cd ${.CURDIR}/../sys/netpfil/pf; \
+ 	${INSTALL} -C -o ${BINOWN} -g ${BINGRP} -m 444 *.h \
+@@ -287,6 +295,18 @@
+ 		    ${DESTDIR}${INCLUDEDIR}/netinet; \
+ 	done
+ .endif
++.if ${MK_NETLINK} != "no"
++	cd ${.CURDIR}/../sys/netlink/linux; \
++	for h in *.h; do \
++		ln -fs ../../../sys/netlink/linux/$$h \
++		    ${DESTDIR}${INCLUDEDIR}/linux; \
++	done
++	cd ${.CURDIR}/../sys/netlink/net; \
++	for h in *.h; do \
++		ln -fs ../../../sys/netlink/net/$$h \
++		    ${DESTDIR}${INCLUDEDIR}/net; \
++	done
++.endif
+ .if ${MK_PF} != "no"
+ 	cd ${.CURDIR}/../sys/netpfil/pf; \
+ 	for h in *.h; do \
+
+--- case 2: files in /usr/include/netlink/{net|linux}
+
+
+Index: /home/luigi/FreeBSD/head/etc/mtree/BSD.include.dist
+===================================================================
+--- /home/luigi/FreeBSD/head/etc/mtree/BSD.include.dist	(revision 273452)
++++ /home/luigi/FreeBSD/head/etc/mtree/BSD.include.dist	(working copy)
+@@ -275,6 +275,12 @@
+     ..
+     netipsec
+     ..
++    netlink
++        linux
++        ..
++        net
++        ..
++    ..
+     netnatm
+         api
+         ..
+Index: /home/luigi/FreeBSD/head/include/Makefile
+===================================================================
+--- /home/luigi/FreeBSD/head/include/Makefile	(revision 273452)
++++ /home/luigi/FreeBSD/head/include/Makefile	(working copy)
+@@ -52,6 +52,7 @@
+ 	geom/mirror geom/mountver geom/multipath geom/nop \
+ 	geom/raid geom/raid3 geom/shsec geom/stripe geom/virstor \
+ 	netgraph/atm netgraph/netflow \
++	netlink/linux netlink/net \
+ 	security/audit \
+ 	security/mac_biba security/mac_bsdextended security/mac_lomac \
+ 	security/mac_mls security/mac_partition \
