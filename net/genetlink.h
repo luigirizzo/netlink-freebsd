@@ -102,11 +102,10 @@ struct genl_ops {
 			struct genl_info *info);
 	int                    (*dumpit)(struct mbuf *m,
 			struct netlink_callback *cb);
-	#if 0
-	/* TODO: fields not used by openvswitch */
+#if 0 /* TODO: fields not used by openvswitch */
 	int                    (*done)(struct netlink_callback *cb);
 	struct list_head        ops_list;
-	#endif
+#endif
 };
 
 struct genl_info {
@@ -161,7 +160,7 @@ genl_set_err(struct genl_family *fam, struct net *net,
 	uint32_t portid, uint32_t group, uint32_t code)
 {
 	if (group >= fam->mcgrp_offset)
-		return -EINVAL;
+		return EINVAL;
 	group += fam->mcgrp_offset;
 	/* we do not support namespaces yet */
 	netlink_set_err(NULL /* net->genl_sock */, portid, group, code);

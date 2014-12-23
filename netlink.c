@@ -104,8 +104,6 @@ static const uint16_t nla_attr_minlen[NLA_TYPE_MAX+1] = {
 };
 
 /*
- * These validate functions return a negative error number because
- * the nla_parse(), a linux API, does so.
  * XXX nla_type() is really a sequence number in the policy definition.
  */
 static int
@@ -124,12 +122,12 @@ validate_nla(const struct nlattr *nla, int maxtype,
 
 	pt = &policy[atype];
 	if (pt->type > NLA_TYPE_MAX) /* error in the policy! */
-		return -EINVAL;
+		return EINVAL;
 
 	plen = pt->len; /* how much space is allowed by policy ? */
         switch (pt->type) {
 	case NLA_FLAG:
-		return (alen != 0) ? -ERANGE : 0; /* nla error */
+		return (alen != 0) ? ERANGE : 0; /* nla error */
 
 	case NLA_NUL_STRING: /* plen excludes the NUL */
 		/*
@@ -139,41 +137,41 @@ validate_nla(const struct nlattr *nla, int maxtype,
 		if (plen && plen+1 < alen)
 			alen = plen + 1;
 		if (alen == 0)
-			return -EINVAL;
+			return EINVAL;
 
 		/* Search for NUL termination */
 		for (i = 0; i < alen; i++) {
 			if (data[i] == 0)
 				return 0; /* all fine */
 		}
-		return -EINVAL; /* missing terminator */
+		return EINVAL; /* missing terminator */
 
 	case NLA_STRING: /* non terminated strings */
 		if (alen == 0) /* empty strings not allowed */
-			return -ERANGE;
+			return ERANGE;
 		if (plen) { /* check the limit */
 			if (data[alen - 1] == 0)
 				alen--;
 			if (alen > plen)
-				return -ERANGE;
+				return ERANGE;
 		}
 		return 0;
 
 	case NLA_BINARY:
-		return (plen && alen > plen) ? -ERANGE : 0;
+		return (plen && alen > plen) ? ERANGE : 0;
 
 	case NLA_NESTED_COMPAT:
 		/* plen indicates minimum alen */
 		if (alen < plen) /* too short */
-			return -ERANGE;
+			return ERANGE;
 		if (alen < NLA_ALIGN(plen)) /* ok (including padding */
 			break;
 		/* if alen >= plen we need another header */
 		if (alen < NLA_ALIGN(plen) + NLA_HDRLEN)
-			return -ERANGE;
+			return ERANGE;
 		nla = (const struct nlattr *)(data + NLA_ALIGN(plen));
 		if (alen < NLA_ALIGN(plen) + NLA_HDRLEN + nla_len(nla))
-			return -ERANGE;
+			return ERANGE;
 		break;
 
 	case NLA_NESTED:
@@ -187,10 +185,10 @@ validate_nla(const struct nlattr *nla, int maxtype,
 	default:
 		if (plen) {
 			if (alen < plen)
-				return -ERANGE;
+				return ERANGE;
 		} else if (pt->type != NLA_UNSPEC) {
 			if (alen < nla_attr_minlen[pt->type])
-				return -ERANGE;
+				return ERANGE;
 		} /* else pass */
         }
 
@@ -366,7 +364,7 @@ netlink_receive_packet(struct mbuf *m, struct socket *so, int proto)
 			int old_l = datalen;
 			(void)old_l;
 			datalen = (l + 0x3ff) & ~0x3ff; /* round to 1k */
-			ND("reallocate buffer %d -> %d [%d]",
+			D("reallocate buffer %d -> %d [%d]",
 				old_l, l, datalen);
 			if (buf != NULL) {
 				free(buf, M_NETLINK);
@@ -378,12 +376,13 @@ netlink_receive_packet(struct mbuf *m, struct socket *so, int proto)
 				return ENOMEM;
 			}
 		}
-		ND("Copy the whole message");
+		ND("Copy message, including header");
 		m_copydata(m, ofs, l, buf);
 		h = (struct nlmsghdr *)buf;
 		if (h->nlmsg_flags & NLM_F_REQUEST &&
 		    h->nlmsg_type >= NLMSG_MIN_TYPE) {
-			D("process the callback");
+			D("msg_type %d callback %p len %d",
+				h->nlmsg_type, _P32(cb), l);
 			err = cb((void *)h);
 			D("callback returns %d", err);
 		}
@@ -409,7 +408,7 @@ nla_put(struct mbuf *m, int attrtype, int attrlen, const void *data)
 	size_t need = NLMSG_ALIGN(totlen);
 
 	if (m->m_pkthdr.len + need > _ML(m))
-		return -EMSGSIZE;
+		return EMSGSIZE;
 	nla = (struct nlattr *)_MC(m);
 	bzero(nla, NLA_HDRLEN);
 	nla->nla_len = totlen;

@@ -93,7 +93,7 @@ genl_register_family_with_ops(struct genl_family *family,
 	 * should try assign that as family id
 	 */
 	if (idfamily != GENL_ID_GENERATE)
-		return -EEXIST;
+		return EEXIST;
 	/* TODO: id generation should be done better */
 	idfamily = atomic_fetchadd_int(&cur_max_genl_family, 1);
 
@@ -238,7 +238,7 @@ genetlink_call_op_dumpit(const struct genl_ops *curop,
 	genl_unlock();
 
 	/* If no error avoid ack */
-	return (res == 0)?-EINTR:res;
+	return (res == 0) ? EINTR : res;
 }
 
 static int
@@ -284,24 +284,30 @@ genetlink_receive_message(char *data)
 			break;
 	}
 
+	D("process family %d %p", idfamily, curfamily);
+
 	if (curfamily == NULL)
-		return -ENOENT;
+		return ENOENT;
 
 	/* check if we have space */
-	if (curfamily->maxattr + 1 > _GNL_MAX_ATTR)
-		return -ENOMEM;
+	if (curfamily->maxattr + 1 > _GNL_MAX_ATTR) {
+		D("no space to process attributes");
+		return ENOMEM;
+	}
 
 	ops = curfamily->ops;
 
 	genlmsg = (struct genlmsghdr *)(data + NLMSG_HDRLEN);
 	numop = genlmsg->cmd;
+	D("cmd is %d look into %d options", numop, curfamily->n_ops);
 	for (i = 0; i < curfamily->n_ops; ++i) {
-		if(ops[i].cmd == numop)
+		if (ops[i].cmd == numop)
 			break;
 	}
 
-	if (i >= curfamily->n_ops)
-		return -EOPNOTSUPP;
+	if (i >= curfamily->n_ops) {
+		return EOPNOTSUPP;
+	}
 
 	curop = &(curfamily->ops[i]);
 
@@ -319,8 +325,10 @@ genetlink_receive_message(char *data)
 
 	info.attrs = attrs;
 	err = genl_parse_info(data, curfamily, curop->policy, &info);
-	if (err)
+	if (err) {
+		D("genl_parse_info returns error %d", err);
 		return err;
+	}
 
 	/* XXX remove this log */
 	log(LOG_INFO, "myhandler:idfamily:%d, numop%d %s\n",
@@ -332,7 +340,7 @@ genetlink_receive_message(char *data)
 	} else if(!(nlmsg->nlmsg_flags & NLM_F_DUMP) && curop->doit) {
 		err = genetlink_call_op_doit(curop, nlmsg, &info);
 	} else {
-		return -EOPNOTSUPP;
+		return EOPNOTSUPP;
 	}
 
 	return err;
@@ -407,7 +415,7 @@ genl_ctrl_lookup_family(struct mbuf *m, struct genl_info * info)
 
 	/* TODO:implement also lookup by id */
 	if (nlaname == NULL)
-		return -EINVAL;
+		return EINVAL;
 
 	LIST_FOREACH(family, &genl_family_list, family_list) {
 		if (strncmp(family->name, familyname, GENL_NAMSIZ) == 0)
@@ -415,7 +423,7 @@ genl_ctrl_lookup_family(struct mbuf *m, struct genl_info * info)
 	}
 
 	if (family == NULL)
-		return -ENOENT;
+		return ENOENT;
 
 	/* Family found!! */
 	reply = nlmsg_new(NLMSG_DEFAULT_SIZE, M_WAITOK);

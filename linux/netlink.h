@@ -134,7 +134,7 @@ struct mbuf;	/* we must be compilable with an opaque type */
 
 #else /* __COMPAT_MBUF_TYPE */	/* mbufs are remapped XXX */
 /* returns a readonly object */
-struct netlink_skb_parms NETLINK_CB(struct mbuf *);
+// struct netlink_skb_parms NETLINK_CB(struct mbuf *);
 #endif /* !__COMPAT_MBUF_TYPE */
 
 struct netlink_skb_parms { /* XXX needs work */

@@ -199,7 +199,7 @@ netlink_attach(struct socket *so, int proto, struct thread *td)
 	struct rawcb *rp;
 	int error;
 
-	D("so %p thread %p", _P32(so), _P32(td));
+	ND("so %p thread %p", _P32(so), _P32(td));
 	KASSERT(so->so_pcb == NULL, ("netlink_attach: so_pcb != NULL"));
 
 	error = bsd_nl_proto_check(proto);
@@ -256,7 +256,7 @@ netlink_connect(struct socket *so, struct sockaddr *nam, struct thread *td)
 	so->nl_src_portid = atomic_fetchadd_32(&netlinkpids, 1);
 	so->nl_dst_portid = nla->nl_pid; /* not used */
 
-	D("src_portid %d dst_portid %d", so->nl_src_portid, so->nl_dst_portid);
+	ND("src_portid %d dst_portid %d", so->nl_src_portid, so->nl_dst_portid);
 	soisconnected(so);
 
 	return 0;
