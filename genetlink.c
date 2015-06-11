@@ -156,32 +156,19 @@ void *
 genlmsg_put(struct mbuf *m, uint32_t portid, uint32_t seq,
 	struct genl_family *family, int flags, uint8_t cmd)
 {
-	struct a {
-		union {
-			struct nlmsghdr n;
-			char pad[NLMSG_HDRLEN];
-		} n;
-		union {
-			struct genlmsghdr g;
-			char pad[NLMSG_HDRLEN];
-		} g;
-	} *hdr;
-	int need = NLMSG_HDRLEN + GENL_HDRLEN + family->hdrsize;
-	void *ret;
+	struct nlmsghdr *nlh;
+	struct genlmsghdr *g;
 
-	if (m->m_pkthdr.len + need > _ML(m))
-		return NULL;
+	nlh = nlmsg_put(m, portid, seq, family->id,
+		GENL_HDRLEN + family->hdrsize, flags);
+	if (nlh == NULL)
+		return nlh; /* no space */
+	g = nlmsg_data(nlh);
+	g->cmd = cmd;
+	g->version = family->version;
+	g->reserved = 0;
 
-	hdr = (struct a *)_MC(m);
-	bzero(hdr, sizeof(struct a));
-	hdr->n.n.nlmsg_type = family->id;
-	hdr->n.n.nlmsg_flags = flags;
-	hdr->n.n.nlmsg_seq = seq;
-	hdr->n.n.nlmsg_pid = portid;
-	hdr->g.g.cmd = cmd; // XXX what about version and reserved
-	ret = _MC(m) + NLMSG_HDRLEN + GENL_HDRLEN; // return value
-	m->m_pkthdr.len += need;
-	return ret;
+	return g;
 }
 
 // XXX check

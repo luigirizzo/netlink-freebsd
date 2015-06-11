@@ -197,14 +197,12 @@ validate_nla(const struct nlattr *nla, int maxtype,
 
 
 /*
- * XXX return a negative value on error as on linux.
- * XXX check structure
  * Parse a sequence of attributes, storing results into tb[].
  * We accept one attribute per type (overwring tb[t] in case
  * of duplicates (note that the type-space is 2^14)
  */
 int
-nla_parse(struct nlattr **tb, int maxtype,
+bsd_nla_parse(struct nlattr **tb, int maxtype,
 	const struct nlattr *head, int len, const struct nla_policy *policy)
 {
 	/* XXX: parse attributes carefully using policy */
@@ -236,14 +234,59 @@ nla_parse(struct nlattr **tb, int maxtype,
  *
  * Hence we build them this way:
  * - always make sure a contiguous buffer is available,
- *   pointed by _MA(m) (m->m_pkthdr.rcvif)
- *   and of length _ML(m)  (m->m_pkthdr.flowid)
+ *   pointed by _M_BUFSTART(m)
+ *   and of length _M_BUFLEN(m)
  * - if possible make the contiguous buffer part of the existing
  *   mbuf so we do not need extra allocations.
  * - if the buffer is externally allocated, at the end
  *   it must be copied and freed.
  * - we track the used space in m_pkthdr.len
  */
+
+/*
+ * Some mbuf pkthdr fields have special meaning when used with netlink:
+ *
+ *	FIELD	MACRO		DESCRIPTION
+ *
+ * 	rcvif	_M_BUFSTART()	linear buffer, possibly external
+ *	fibnum	_M_BUFLEN()	linear buffer length
+ *	len	--		current write offset
+ *	flowid	NETLINK_CB()	src_portid, 32 bit
+ *	rsstype	_M_NLPROTO()	protocol (NETLINK_GENERIC etc.)
+ *
+ * In more detail:
+ *
+ * 1. netlink messages are built incrementally in a linear buffer of
+ * predefined size. This is a poor match with mbuf chains,
+ * which may be split and have no predefined size.
+ * Hence we use two mbuf fields (see above, _M_BUFSTART() and _M_BUFLEN() )
+ * for the linear buffer pointer and max len,
+ * and use m_pkthdr.len to record the space used so far
+ * (remember of course to copy back and fix things before sending).
+ * These are abstracted by the three macros _M_BUFSTARTA)(), _M_BUFLEN() and _M_CUR()
+ * _M_BUFSTART() and _M_BUFLEN() are cleared when passing the buffer back to the kernel
+ *
+ * 2. The protocol is mapped through _MP(m) into rsstype, and is used
+ * in netlink_input()
+ *
+ * 3. sk_buff have a 48-byte "control buffer" (cb) to carry aux info.
+ * In netlink this is wrapped by NETLINK_CB() into a pointer to a
+ * struct netlink_skb_parms.
+ * We need at least the portid, the source port for
+ * messages coming from userspace, which in turn is used to locate the
+ * destination socket when building a reply.
+ * Netlink messages do not need flowid, so we store the portid there.
+ * 
+ */
+
+
+#define _M_BUFSTART(m)  (m)->m_pkthdr.rcvif   /* linear buffer pointer */
+#define _M_BUFLEN(m)  ((m)->m_pkthdr.fibnum)  /* max length, 16 bit */
+#define _M_CUR(m)  ((char *)_M_BUFSTART(m) + (m)->m_pkthdr.len) /* cur data ptr */
+
+#define _M_NLPROTO(m)  ((m)->m_pkthdr.rsstype)  /* netlink proto, 8 bit */
+
+#define NETLINK_CB(_m)	(*(struct netlink_skb_parms*)&((_m)->m_pkthdr.flowid))
 
 
 /*
@@ -254,9 +297,10 @@ nla_parse(struct nlattr **tb, int maxtype,
  *
  * Here we call m_getm() and if the buffer is not contiguous (only happens
  * when it is too large) we allocate an external buffer.
- * In all case set _ML(m) to the requested capacity.
+ * In all case set _M_BUFLEN(m) to the requested capacity.
  *
  * The 'put' messages always update m->m_pkthdr.len
+ * XXX todo: handle M_NEGATIVE_ERROR
  */
 struct mbuf *
 nlmsg_new(size_t payload, int flags)
@@ -264,25 +308,55 @@ nlmsg_new(size_t payload, int flags)
 	uint32_t l = NLMSG_SPACE(payload);
 	struct mbuf *m = m_getm(NULL, l, flags, MT_DATA);
 	/* XXX could use M_TRAILINGSPACE(m) ? */
-	int space = (m->m_flags & M_EXT) ? m->m_ext.ext_size :
+	int space;
+
+	if (m == NULL)
+		return m;
+
+	m->m_flags |= (flags & M_NEGATIVE_ERROR);
+	space = (m->m_flags & M_EXT) ? m->m_ext.ext_size :
                         ((m->m_flags & M_PKTHDR) ? MHLEN : MLEN);
 
 	D("got %d bytes space %d at %p", l, space, _P32(m));
-	if (m) {
-		/* we really want a contiguous buffer,
-		 * so if we have some odd length we allocate one
-		 * and store the pointer in rcvif
-		 */
-		_MA(m) = (l <= space) ? mtod(m, void *) :
-			malloc(l, M_NETLINK, flags|M_ZERO);
-		if (_MA(m)) {
-			_ML(m) = l;
-		} else {
-			m_freem(m);
-			m = NULL;
-		}
+	/* we really want a contiguous buffer,
+	 * so if we have some odd length we allocate one
+	 * and store the pointer in rcvif
+	 */
+	_M_BUFSTART(m) = (l <= space) ? mtod(m, void *) :
+		malloc(l, M_NETLINK, flags|M_ZERO);
+	if (_M_BUFSTART(m)) {
+		_M_BUFLEN(m) = l;
+	} else {
+		m_freem(m);
+		m = NULL;
 	}
 	return m;
+}
+
+/*
+ * put a message, return a pointer to the info
+ * XXX define in terms of nlmsg_put()
+ */
+struct nlmsghdr *
+nlmsg_put(struct mbuf *m, uint32_t portid, uint32_t seq,
+	int type, int payload_len, int flags)
+{
+	struct nlmsghdr *nlh;
+	int len = nlmsg_msg_size(payload_len);
+	int need = NLMSG_ALIGN(len);
+
+	if (m->m_pkthdr.len + need > _M_BUFLEN(m))
+		return NULL;
+
+	nlh = (struct nlmsghdr *)_M_CUR(m);
+	m->m_pkthdr.len += need;
+	/* initialize all fields */
+	nlh->nlmsg_type = type;
+	nlh->nlmsg_len = len; /* without padding */
+	nlh->nlmsg_flags = flags;
+	nlh->nlmsg_seq = seq;
+	nlh->nlmsg_pid = portid;
+	return nlh;
 }
 
 /*
@@ -303,11 +377,11 @@ netlink_ack(uint8_t proto, uint32_t portid, struct nlmsghdr * nlmsg, int err)
 
 	D("starting, err %d len %d", err, payloadsize);
 	m = nlmsg_new(payloadsize, M_WAITOK);
-	_MP(m) = proto; /* this is used later in netlink_input() */
+	_M_NLPROTO(m) = proto; /* this is used later in netlink_input() */
 	/* XXX we don't set NETLINK_CB() */
 
 	// XXX nlmsg_put()
-	repnlh = (struct nlmsghdr *)_MC(m);
+	repnlh = (struct nlmsghdr *)_M_CUR(m);
 	repnlh->nlmsg_type = NLMSG_ERROR;
 	repnlh->nlmsg_flags = 0;
 	repnlh->nlmsg_seq = nlmsg->nlmsg_seq;
@@ -315,7 +389,7 @@ netlink_ack(uint8_t proto, uint32_t portid, struct nlmsghdr * nlmsg, int err)
 	m->m_pkthdr.len += NLMSG_HDRLEN;
 
 	// XXX unclear how much i should copy
-	errmsg = (struct nlmsgerr *)_MC(m);
+	errmsg = (struct nlmsgerr *)_M_CUR(m);
 	errmsg->error = err;
 #if 0 // XXX check
 	m->m_pkthdr.len +=
@@ -388,7 +462,7 @@ netlink_receive_packet(struct mbuf *m, struct socket *so, int proto)
 		}
 
 		if (err != EINTR && (h->nlmsg_flags & NLM_F_ACK || err != 0))
-			netlink_ack(_MP(m), NETLINK_CB(m).portid, h, err);
+			netlink_ack(_M_NLPROTO(m), NETLINK_CB(m).portid, h, err);
 
 		ofs += NLMSG_ALIGN(l);
 		D("ack done, now moving to %d/%d", ofs, pktlen);
@@ -400,6 +474,9 @@ netlink_receive_packet(struct mbuf *m, struct socket *so, int proto)
 }
 
 
+/*
+ * netlink attribute manipulation
+ */
 int
 nla_put(struct mbuf *m, int attrtype, int attrlen, const void *data)
 {
@@ -407,31 +484,35 @@ nla_put(struct mbuf *m, int attrtype, int attrlen, const void *data)
 	size_t totlen = NLMSG_ALIGN(NLA_HDRLEN + attrlen);
 	size_t need = NLMSG_ALIGN(totlen);
 
-	if (m->m_pkthdr.len + need > _ML(m))
-		return EMSGSIZE;
-	nla = (struct nlattr *)_MC(m);
+	if (m->m_pkthdr.len + need > _M_BUFLEN(m))
+		return (m->m_flags & M_NEGATIVE_ERROR) ? -EMSGSIZE : EMSGSIZE;
+	nla = (struct nlattr *)_M_CUR(m);
 	bzero(nla, NLA_HDRLEN);
 	nla->nla_len = totlen;
 	nla->nla_type = attrtype;
 	m->m_pkthdr.len += NLA_HDRLEN;
 	if (attrlen > 0) {
 		uint32_t pad = need - totlen;
-		bcopy(data, _MC(m), attrlen);
+		bcopy(data, _M_CUR(m), attrlen);
 		m->m_pkthdr.len += attrlen;
 		if (pad) { /* add padding */
-			bzero(_MC(m), pad);
+			bzero(_M_CUR(m), pad);
 			m->m_pkthdr.len += pad;
 		}
 	}
 	return 0;
 }
 
+/*
+ * add an attribute, return the starting position, used to set
+ * the total length or cancel the operation
+ */
 struct nlattr *
 nla_nest_start(struct mbuf *m, int attrtype)
 {
 	// XXX we should return the starting of the attribute after
 	// possibly moving
-	struct nlattr *start = (struct nlattr *)_MC(m);
+	struct nlattr *start = (struct nlattr *)_M_CUR(m);
 
 	if (nla_put(m, attrtype, 0, NULL) < 0)
 		return NULL;
@@ -439,17 +520,26 @@ nla_nest_start(struct mbuf *m, int attrtype)
 	return start;
 }
 
+/*
+ * update the total attribute's length
+ */
 int
 nla_nest_end(struct mbuf *m, struct nlattr *start)
 {
-	start->nla_len = _MC(m) - (char *)start;
-	return m->m_pkthdr.len; // XXX
+	start->nla_len = _M_CUR(m) - (char *)start;
+	return m->m_pkthdr.len;
 }
 
+/*
+ * reset the length to the 'start' argument
+ * This is defined here because _M_BUFSTART() will eventually be
+ * valid only in this source.
+ */
 void
-nla_nest_cancel(struct mbuf *m, struct nlattr* start)
+nlmsg_trim(struct mbuf *m, const void * start)
 {
-	m->m_pkthdr.len = (char *)start - (char *)_MA(m);
+	// XXX validity checks ?
+	m->m_pkthdr.len = (char *)start - (char *)_M_BUFSTART(m);
 }
 
 /*
@@ -460,13 +550,13 @@ nlattr *nla_reserve(struct mbuf *m, int attrtype, int attrlen)
 {
 	size_t totlen = NLA_HDRLEN + attrlen;
 	struct nlattr * nla;
-	int space = _ML(m) - m->m_pkthdr.len;
+	int space = _M_BUFLEN(m) - m->m_pkthdr.len;
 	int want = NLMSG_ALIGN(totlen);
 
 	if (space < want)
 		return NULL;
 
-	nla = (struct nlattr *)((char *)_MA(m) + m->m_pkthdr.len);
+	nla = (struct nlattr *)((char *)_M_BUFSTART(m) + m->m_pkthdr.len);
 	nla->nla_len = totlen;
 	nla->nla_type = attrtype;
 
@@ -484,7 +574,7 @@ nlattr *nla_reserve(struct mbuf *m, int attrtype, int attrlen)
 int
 nlmsg_end(struct mbuf *m, struct nlmsghdr *nlh)
 {
-	nlh->nlmsg_len = _MC(m) - (char *)nlh;
+	nlh->nlmsg_len = _M_CUR(m) - (char *)nlh;
 	return m->m_pkthdr.len;
 }
 
@@ -494,18 +584,18 @@ nlmsg_reply(struct mbuf *m, struct genl_info *info)
 {
 	int l = m->m_pkthdr.len;
 
-	D("have %d bytes out of %d", l, _ML(m));
-	if ((char *)_MA(m) == mtod(m, char *)) { /* simple, plain mbuf */
+	D("have %d bytes out of %d", l, _M_BUFLEN(m));
+	if ((char *)_M_BUFSTART(m) == mtod(m, char *)) { /* simple, plain mbuf */
 		m->m_len = l; /* update this mbuf's len */
 	} else { /* external buffer */
-		m_copyback(m, 0, l, (char *)_MA(m));
+		m_copyback(m, 0, l, (char *)_M_BUFSTART(m));
 		D("copy data from external buffer, plen %d len %d",
 			m->m_pkthdr.len, m->m_len);
-		free(_MA(m), M_NETLINK);
+		free(_M_BUFSTART(m), M_NETLINK);
 	};
 	/* clear extra fields */
-	_MA(m) = NULL;
-	_ML(m) = 0;
+	_M_BUFSTART(m) = NULL;
+	_M_BUFLEN(m) = 0;
 	/* XXX we still need MP() */
 	return bsd_netlink_send_msg(NULL, m);
 }

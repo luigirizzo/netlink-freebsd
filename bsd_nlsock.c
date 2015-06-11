@@ -82,7 +82,7 @@ int
 bsd_netlink_send_msg(struct socket *so, struct mbuf *m)
 {
 	D("m %p proto %d pid %d plen %d so %p", _P32(m),
-		_MP(m), NETLINK_CB(m).portid, m->m_pkthdr.len, _P32(so));
+	    _M_NLPROTO(m), NETLINK_CB(m).portid, m->m_pkthdr.len, _P32(so));
 	return netisr_queue(NETISR_NETLINK, m);
 }
 
@@ -149,7 +149,7 @@ raw_input_netlink_cb(struct mbuf *m, struct sockproto *proto,
 	msg = mtod(m, struct nlmsghdr *);
 
 	D("m %p proto %d src_portid %d dst_portid %d ty %d so_portid %d len %d so %p",
-		_P32(m), _MP(m), NETLINK_CB(m).portid,
+		_P32(m), _M_NLPROTO(m), NETLINK_CB(m).portid,
 		msg->nlmsg_pid, msg->nlmsg_type,
 		key, m->m_pkthdr.len, _P32(so));
 	/* return 0 on match, 1 on fail */
@@ -175,11 +175,11 @@ netlink_input(struct mbuf *m)
 		.nl_family = PF_NETLINK,
 		.nl_pid = 0  /* comes from the kernel */ };
 	struct sockproto nl_proto = {
-		.sp_family = PF_NETLINK, .sp_protocol = _MP(m)};
+		.sp_family = PF_NETLINK, .sp_protocol = _M_NLPROTO(m)};
 
 	D("m %p proto %d src_portid %d len %d",
-		_P32(m), _MP(m), NETLINK_CB(m).portid, m->m_pkthdr.len);
-	_MP(m) = 0; // clear protocol in case it is not zero
+	    _P32(m), _M_NLPROTO(m), NETLINK_CB(m).portid, m->m_pkthdr.len);
+	_M_NLPROTO(m) = 0; // clear protocol in case it is not zero
 	D("calling input proto");
 	/* the dispatcher matches sockets using raw_input_netlink_cb(),
 	 * and replicates messages as needed.
@@ -380,10 +380,10 @@ netlink_output(struct mbuf *m, struct socket *so NLO_EXTRA )
 	rp = sotorawcb(so);
 	proto = rp->rcb_proto.sp_protocol;
 	/* save protocol and portid into the mbuf */
-	_MP(m) = proto;
+	_M_NLPROTO(m) = proto;
 	NETLINK_CB(m).portid = so->nl_src_portid;
 	D("so %p m %p m_portid %d m_proto %d plen %d len %d",
-		_P32(so), _P32(m), NETLINK_CB(m).portid, _MP(m),
+		_P32(so), _P32(m), NETLINK_CB(m).portid, _M_NLPROTO(m),
 		m->m_pkthdr.len, m->m_len);
 	ret = netlink_receive_packet(m, so, proto);
 	D("returns %d", ret);

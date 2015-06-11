@@ -70,6 +70,7 @@ int bsd_netlink_send_msg(struct socket *so, struct mbuf *m);
 int netlink_receive_packet(struct mbuf *, struct socket *, int);
 
 #define M_NETLINK_MULTICAST	M_PROTO1
+#define M_NEGATIVE_ERROR	M_PROTO2
 
 #define	nl_src_portid	so_fibnum
 #define	nl_dst_portid	so_user_cookie
@@ -105,7 +106,45 @@ struct nla_policy {
 	uint16_t        len;
 };
 
+static inline int
+nlmsg_msg_size(int payload_size)
+{
+	return NLMSG_HDRLEN + payload_size;
+}
+
+/*
+ * create a new mbuf for a netlink msg.
+ * Flags includes M_NEGATIVE_ERROR to indicate how we want nla_put()
+ * to return errors (linux clients need negative error values).
+ */
 struct mbuf *nlmsg_new(size_t payload, int flags);
+
+static inline void *
+nlmsg_data(const struct nlmsghdr *nlh)
+{
+	return (unsigned char *)(uintptr_t) nlh + NLMSG_HDRLEN;
+}
+
+void nlmsg_trim(struct mbuf *m, const void *mark); /* in netlink.c */
+
+static inline void
+nlmsg_cancel(struct mbuf *m, struct nlmsghdr *nlh)
+{
+	nlmsg_trim(m, nlh);
+}
+
+int nlmsg_end(struct mbuf *m, struct nlmsghdr *nlh);
+
+struct nlmsghdr *nlmsg_put(struct mbuf *m, uint32_t portid,
+	uint32_t seq, int type, int payload, int flags);
+
+struct genl_info; // XXX
+int nlmsg_reply(struct mbuf *m, struct genl_info *info);
+
+
+/*
+ * kernel routines to manipulate netlink attributes (nla_*)
+ */
 
 /*
  * nla_put() and __nla_put() append data to a nlmsg.
@@ -185,7 +224,12 @@ static inline uint64_t nla_get_u64(const struct nlattr *nla)
 
 struct nlattr *nla_nest_start(struct mbuf *m, int attrtype);
 int nla_nest_end(struct mbuf *m, struct nlattr *start);
-void nla_nest_cancel(struct mbuf *m, struct nlattr* start);
+static inline void
+nla_nest_cancel(struct mbuf *m, struct nlattr* start)
+{
+	nlmsg_trim(m, start);
+}
+
 struct nlattr * nla_reserve(struct mbuf *m, int attrtype, int attrlen);
 #define __nla_reserve nla_reserve
 
@@ -207,12 +251,6 @@ static inline int
 nla_total_size(int payload)
 {
 	return NLA_ALIGN(nla_attr_size(payload));
-}
-
-static inline void *
-nlmsg_data(const struct nlmsghdr *nlh)
-{
-	return (unsigned char *)(uintptr_t) nlh + NLMSG_HDRLEN;
 }
 
 
@@ -279,19 +317,35 @@ nla_padlen(int payload)
 #define nla_get_be32 nla_get_u32
 #define nla_get_be64 nla_get_u64
 
-int nla_parse(struct nlattr **tb, int maxtype, const struct nlattr *head,
+/*
+ * nla_parse*() should return a negative error on linux,
+ * but we have no way to discriminate the caller.
+ * XXX perhaps introduce bsd_nla_parse*() with the bsd return values.
+ */
+int bsd_nla_parse(struct nlattr **tb, int maxtype, const struct nlattr *head,
 		int len, const struct nla_policy *policy);
+
+static inline int
+bsd_nla_parse_nested(struct nlattr *tb[], int maxtype,
+	const struct nlattr *nla, const struct nla_policy *policy)
+{
+	return bsd_nla_parse(tb, maxtype, nla_data(nla), nla_len(nla), policy);
+}
+
+static inline int
+nla_parse(struct nlattr **tb, int maxtype, const struct nlattr *head,
+		int len, const struct nla_policy *policy)
+{
+	return -nla_parse(tb, maxtype, head, len, policy);
+}
 
 static inline int
 nla_parse_nested(struct nlattr *tb[], int maxtype,
 	const struct nlattr *nla, const struct nla_policy *policy)
 {
-	return nla_parse(tb, maxtype, nla_data(nla), nla_len(nla), policy);
+	return -bsd_nla_parse_nested(tb, maxtype, nla, policy);
 }
 
-int nlmsg_end(struct mbuf *m, struct nlmsghdr *nlh);
-struct genl_info; // XXX
-int nlmsg_reply(struct mbuf *m, struct genl_info *info);
 
 #define nla_memcpy(dest, src, len) \
 	memcpy(dest, nla_data(src), min(len,nla_len(src)))

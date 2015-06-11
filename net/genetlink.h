@@ -153,7 +153,7 @@ genl_register_family(struct genl_family *family)
 int genl_unregister_family(struct genl_family *family);
 
 /*
- * XXX incomplete
+ * XXX incomplete same as netlink_set_err()
  */
 static inline int
 genl_set_err(struct genl_family *fam, struct net *net,
@@ -163,8 +163,7 @@ genl_set_err(struct genl_family *fam, struct net *net,
 		return EINVAL;
 	group += fam->mcgrp_offset;
 	/* we do not support namespaces yet */
-	netlink_set_err(NULL /* net->genl_sock */, portid, group, code);
-	return 0;
+	return netlink_set_err(NULL /* net->genl_sock */, portid, group, code);
 }
 
 /**
@@ -207,6 +206,9 @@ genlmsg_new(size_t payload, int flags)
 static inline void
 genlmsg_cancel(struct mbuf *m, void *hdr)
 {
+	if (hdr)
+		nlmsg_cancel(m, (struct nlmsghdr *)
+		    ((char *)hdr - GENL_HDRLEN - NLMSG_HDRLEN) );
 }
 
 void *genlmsg_put(struct mbuf *m, uint32_t portid, uint32_t seq,

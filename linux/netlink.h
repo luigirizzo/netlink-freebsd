@@ -87,48 +87,13 @@ struct socket;
 struct mbuf;	/* we must be compilable with an opaque type */
 
 /*
- * Some mbuf pkthdr fields have special meaning when used with netlink:
- *
- *	FIELD	MACRO		DESCRIPTION
- *
- * 	rcvif	_MA()		linear buffer, possibly external
- *	fibnum	_ML()		linear buffer length
- *	len	--		current write offset
- *	flowid	NETLINK_CB()	src_portid, 32 bit
- *	rsstype	_MP()		protocol (NETLINK_GENERIC etc.)
- *
- * In more detail:
- *
- * 1. netlink messages are built incrementally in a linear buffer of
- * predefined size. This is a poor match with mbuf chains,
- * which may be split and have no predefined size.
- * Hence we use two mbuf fields (see above, _MA() and _ML() )
- * for the linear buffer pointer and max len,
- * and use m_pkthdr.len to record the space used so far
- * (remember of course to copy back and fix things before sending).
- * These are abstracted by the three macros _MA)(), _ML() and _MC()
- * _MA() and _ML() are cleared when passing the buffer back to the kernel
- *
- * 2. The protocol is mapped through _MP(m) into rsstype, and is used
- * in netlink_input()
- *
- * 3. sk_buff have a 48-byte "control buffer" (cb) to carry aux info.
- * In netlink this is wrapped by NETLINK_CB() into a pointer to a
- * struct netlink_skb_parms.
- * We need at least the portid, the source port for
- * messages coming from userspace, which in turn is used to locate the
- * destination socket when building a reply.
- * Netlink messages do not need flowid, so we store the portid there.
- * 
+ * Some mbuf pkthdr fields have special meaning when used with netlink
+ * messages, see netlink.c (only used there, except NETLINK_CB()
  */
 
 #ifndef __COMPAT_MBUF_TYPE /* mappings only work in native systems */
 
-#define _MA(m)  (m)->m_pkthdr.rcvif   /* linear buffer pointer */
-#define _ML(m)  ((m)->m_pkthdr.fibnum)  /* max length, 16 bit */
-#define _MC(m)  ((char *)_MA(m) + (m)->m_pkthdr.len) /* cur data ptr */
-
-#define _MP(m)  ((m)->m_pkthdr.rsstype)  /* netlink proto, 8 bit */
+#define _M_NLPROTO(m)  ((m)->m_pkthdr.rsstype)  /* netlink proto, 8 bit */
 
 #define NETLINK_CB(_m)	(*(struct netlink_skb_parms*)&((_m)->m_pkthdr.flowid))
 
@@ -154,12 +119,20 @@ CTASSERT(sizeof(struct netlink_skb_parms) <= sizeof(uint32_t));
 
 /* TODO: this function is not really remapped.
  * It is just a stub that logs the error
+ *
+ * The function should report error to broadcast listeners.
+ * sock is the kernel netlink socket, pid is the process to skip,
+ * group is the broadcast group that should receive the error,
+ * err is the error code (on linux is negative, the info
+ * is sent to receivers as a positive value.
+ * Returns the number of recipients.
  */
 #include <sys/syslog.h> /* LOG_INFO */
-static inline void
+static inline int
 netlink_set_err(void *sock, uint32_t pid, uint32_t group, int err)
 {
 	log(LOG_INFO, "Netlink set err, func:%s\n", __func__);
+	return 0;
 }
 
 /*

@@ -55,6 +55,10 @@ struct genlmsghdr {
 
 #define GENL_HDRLEN		NLMSG_ALIGN(sizeof(struct genlmsghdr))
 
+#ifdef CTASSERT
+CTASSERT(GENL_HDRLEN == sizeof(struct genlmsghdr));
+#endif
+
 /**************************************************************************
  * Controller
  **************************************************************************/
